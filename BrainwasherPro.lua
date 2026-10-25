@@ -1,7 +1,7 @@
 -- BrainwasherPro: named, iconed talent specs at the Goblin Brainwashing Device,
 -- with an optional ActionBarProfiles profile per spec. By Fostercare5988, based
 -- on Horyoshi's original BrainwasherPro. WoW 1.12.1 with ClassicAPI
--- 1.16.0+ (ClassicAPIRequirement.lua).
+-- 1.17.7+ (ClassicAPIRequirement.lua).
 local addonName, ns = ...
 if ns.unsupported then return end
 local UI = ns.UI
