@@ -9,7 +9,7 @@ VanillaForge (29 tests).
 
 | File | Job |
 | --- | --- |
-| `ClassicAPIRequirement.lua` | ClassicAPI 1.17.7+ guard; sets `ns.unsupported` so the addon stays inert |
+| `ClassicAPIRequirement.lua` | ClassicAPI 1.17.11+ guard; sets `ns.unsupported` so the addon stays inert |
 | `ForgeUI.lua` | The shared settings kit (ForgeUI, Ember) |
 | `BrainwasherPro.lua` | Menu reading, slot actions and popups, main and edit windows, bar switching |
 
