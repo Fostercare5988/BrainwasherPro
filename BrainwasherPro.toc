@@ -1,11 +1,11 @@
 ## X-Website: https://github.com/Fostercare5988/BrainwasherPro
 ## X-Maintainer: Fostercare5988
 ## Interface: 11200
-## X-ClassicAPI-Min-Version: 1.17.7
+## X-ClassicAPI-Min-Version: 1.17.11
 ## Dependencies: !!!ClassicAPI
 ## OptionalDeps: ActionBarProfiles
 ## Title: |cff00ff00Brainwasher Pro|r
-## Notes: Named, iconed talent specs at the Goblin Brainwashing Device, with optional ActionBarProfiles switching. Based on Horyoshi's BrainwasherPro. Requires ClassicAPI v1.17.7+.
+## Notes: Named, iconed talent specs at the Goblin Brainwashing Device, with optional ActionBarProfiles switching. Based on Horyoshi's BrainwasherPro. Requires ClassicAPI v1.17.11+.
 ## Author: Fostercare5988
 ## X-Credits: Original BrainwasherPro by Horyoshi
 ## Version: 1.0.0
