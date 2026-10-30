@@ -1,7 +1,7 @@
 # Brainwasher Pro
 
 A clean window for the Goblin Brainwashing Device's talent specs, for World of
-Warcraft 1.12.1. Requires ClassicAPI 1.17.11+.
+Warcraft 1.12.1. Requires ClassicAPI.
 
 - Talk to the device and Brainwasher Pro replaces its menu: one row per talent slot.
 - Click a spec's icon to activate it; buying a slot or resetting talents asks first.
