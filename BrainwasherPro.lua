@@ -668,3 +668,16 @@ eventFrame:SetScript("OnEvent", function()
         if pendingBars and pendingBars.afterCombat then LoadPendingBars(pendingBars.token) end
     end
 end)
+
+-- Game Menu > AddOn Options > BrainwasherPro (ClassicAPI).
+local entry = CreateFrame("Frame", "BrainwasherProOptionsEntry")
+entry.name = "BrainwasherPro"
+local entryTitle = entry:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+entryTitle:SetPoint("TOPLEFT", entry, "TOPLEFT", 16, -16)
+entryTitle:SetText("BrainwasherPro")
+local entryText = entry:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+entryText:SetPoint("TOPLEFT", entryTitle, "BOTTOMLEFT", 0, -8)
+entryText:SetWidth(380)
+entryText:SetJustifyH("LEFT")
+entryText:SetText("Switch talent specs from the Brainwasher NPC. The window opens when you talk to one.")
+InterfaceOptions_AddCategory(entry)
