@@ -70,16 +70,6 @@ local function ColorTalentSummary(t1, t2, t3)
     return getColor(t1) .. t1 .. "|r/" .. getColor(t2) .. t2 .. "|r/" .. getColor(t3) .. t3 .. "|r"
 end
 
--- "1g", "1g 50s", "75s": copper as the device's price, without zero parts.
-local function FormatPrice(copper)
-    local gold, silver, rest = math.floor(copper / 10000), math.floor(copper % 10000 / 100), copper % 100
-    local parts = {}
-    if gold > 0 then table.insert(parts, gold .. "g") end
-    if silver > 0 then table.insert(parts, silver .. "s") end
-    if rest > 0 then table.insert(parts, rest .. "c") end
-    return table.concat(parts, " ")
-end
-
 local function GetTalentCounts()
     local _, _, t1 = GetTalentTabInfo(1)
     local _, _, t2 = GetTalentTabInfo(2)
@@ -185,7 +175,7 @@ local function ReadMenu()
         elseif string.find(text, PATTERN_RESET) then
             local _, _, g, s, c = string.find(text, PATTERN_RESET_PRICE)
             local copper = g and (tonumber(g) * 10000 + tonumber(s) * 100 + tonumber(c)) or 0
-            found.reset = { option = option, price = copper > 0 and FormatPrice(copper) or nil }
+            found.reset = { option = option, price = copper > 0 and GetCoinTextureString(copper) or nil }
         end
     end
     return isDevice and found or nil
