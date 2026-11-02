@@ -301,7 +301,7 @@ local function FitText(font, text, keep, width)
     width = width or TEXT_WIDTH
     font:SetText(text)
     if font:GetStringWidth() <= width then return end
-    for n = string.len(text) - 1, (keep or 0) + 1, -1 do
+    for n = #text - 1, (keep or 0) + 1, -1 do
         font:SetText(string.sub(text, 1, n) .. "...")
         if font:GetStringWidth() <= width then return end
     end
@@ -353,7 +353,7 @@ local function UpdateRow(slot)
         if bars then
             -- A missing profile shows as such; its name is in the tooltip.
             summary = summary .. (hasSplit and "  " or "") .. "Bars: "
-            keep = string.len(summary)
+            keep = #summary
             summary = summary .. (missing and "|cffff4d4dmissing|r" or bars)
         end
         row.tip = { name = specName, split = hasSplit and (t1 .. "/" .. t2 .. "/" .. t3) or nil,
