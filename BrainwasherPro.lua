@@ -1,12 +1,11 @@
 -- BrainwasherPro: named, iconed talent specs at the Goblin Brainwashing Device,
 -- with an optional ActionBarProfiles profile per spec. By Fostercare5988, based
--- on Horyoshi's original BrainwasherPro. WoW 1.12.1 with ClassicAPI
--- 1.17.11+ (ClassicAPIRequirement.lua).
+-- on Horyoshi's original BrainwasherPro. Needs ClassicAPI (ClassicAPIRequirement.lua).
 local addonName, ns = ...
 if ns.unsupported then return end
 local UI = ns.UI
 
-BrainwasherPro = {}
+local BrainwasherPro = {}
 
 -- The device is recognised by its menu, not its name. Option texts read in
 -- play (2026-10-21):
@@ -21,20 +20,22 @@ local PATTERN_BUY = "Buy (%d+).. Specialization.* (%d+) gold"
 local PATTERN_RESET = "Reset my talents"
 local PATTERN_RESET_PRICE = "%((%d+)g(%d+)s(%d+)c%)"
 local MAX_SLOTS = 8
-local DEFAULT_ICON = "Interface\\Icons\\INV_Misc_QuestionMark"
+local ICON_PATH = "Interface\\Icons\\"
+local DEFAULT_ICON = ICON_PATH .. "INV_Misc_QuestionMark"
 local TEXT_WIDTH = 146         -- row text stops before the Edit button
 local ICON_COLUMNS, ICON_ROWS = 8, 5
 local ICONS_PER_PAGE = ICON_COLUMNS * ICON_ROWS
-local BAR_SETTLE = 1.5       -- seconds without talent/spell events before bars load
-local BAR_TIMEOUT = 60       -- give up waiting for the talent swap
+local BAR_SETTLE = 1.5       -- seconds without talent/spell events before the swap counts as done
+local SWAP_TIMEOUT = 60      -- give up waiting for the talent swap
 
 local mainFrame, editFrame = nil, nil
 local rows = {}
 local menu = nil             -- options of the device menu on screen; nil when none
 local session = 0            -- bumps on every menu, so stale popups and clicks do nothing
 local hiddenGossip = nil     -- GossipFrame scale/alpha we changed, to restore
-local pendingBars = nil      -- { profile, token, deadline } while a spec swap is under way
-local barToken = 0         -- the settle timer that may load the bars
+local swap = nil             -- { slot, profile, before, token } while a spec swap is under way
+local swapToken = 0          -- the settle timer that may finish the swap
+local icons = nil            -- icon names the picker offers, read on the first Edit
 local editSlot, editIcon, editProfile, iconPage = nil, nil, nil, 1
 local eventFrame = CreateFrame("Frame")
 local SWAP_EVENTS = { "CHARACTER_POINTS_CHANGED", "SPELLS_CHANGED", "PLAYER_REGEN_ENABLED" }
@@ -77,22 +78,58 @@ local function GetTalentCounts()
     return t1 or 0, t2 or 0, t3 or 0
 end
 
+-- Talent builds -------------------------------------------------------------------
+-- A build is every talent's rank, one digit each, trees split by "-":
+-- "550000000-55-". Two specs with one point split (41/10/0 twice) differ here.
+
+local rankBuffer, treeBuffer = {}, {}
+
+local function CurrentBuild()
+    for tab = 1, 3 do
+        local count = GetNumTalents(tab)
+        for i = 1, count do
+            local _, _, _, _, rank = GetTalentInfo(tab, i)
+            rankBuffer[i] = rank or 0
+        end
+        for i = count + 1, #rankBuffer do rankBuffer[i] = nil end
+        treeBuffer[tab] = table.concat(rankBuffer)
+    end
+    return table.concat(treeBuffer, "-")
+end
+
+local function Points(ranks)
+    local sum = 0
+    for digit in string.gmatch(ranks, "%d") do sum = sum + tonumber(digit) end
+    return sum
+end
+
+local function BuildSplit(build)
+    local _, _, a, b, c = string.find(build, "^(%d*)%-(%d*)%-(%d*)$")
+    if not a then return end
+    return Points(a), Points(b), Points(c)
+end
+
 -- ActionBarProfiles ------------------------------------------------------------
 
 local function BarsAvailable()
     return type(ABP_GetProfileNames) == "function" and type(ABP_LoadProfileByName) == "function"
 end
 
+local function ProfileNames()
+    return BarsAvailable() and ABP_GetProfileNames() or nil
+end
+
 -- false when ActionBarProfiles no longer has the profile; nil when it cannot
--- tell yet (not installed or not loaded).
-local function ProfileExists(profile)
-    local names = BarsAvailable() and ABP_GetProfileNames()
+-- tell (not installed or not loaded).
+local function ProfileExists(profile, names)
     if not names then return nil end
     for _, name in ipairs(names) do
         if name == profile then return true end
     end
     return false
 end
+
+-- Swaps ------------------------------------------------------------------------
 
 -- Talent and spell events matter only while a swap is being watched.
 local function ListenForSwap(on)
@@ -101,49 +138,63 @@ local function ListenForSwap(on)
     end
 end
 
-local function StopWatchingBars()
-    pendingBars = nil
+local function StopWatching()
+    swap = nil
     ListenForSwap(false)
 end
 
-local function LoadPendingBars(token)
-    if not (pendingBars and pendingBars.token == token) then return end
-    if UnitAffectingCombat("player") then
-        pendingBars.afterCombat = true
+-- The swap is done: the slot holds the talents you have now, and its bars load
+-- (after combat, if you are fighting).
+local function FinishSwap(token)
+    local watch = swap
+    if not (watch and watch.token == token) then return end
+    local spec = EnsureSpec(watch.slot)
+    spec.build = CurrentBuild()
+    spec.t1, spec.t2, spec.t3 = GetTalentCounts()
+    BrainwasherProDB.current = watch.slot
+    if watch.profile and UnitAffectingCombat("player") then
+        watch.afterCombat = true
         return
     end
-    local profile = pendingBars.profile
-    StopWatchingBars()
-    ABP_LoadProfileByName(profile)
+    StopWatching()
+    if watch.profile then ABP_LoadProfileByName(watch.profile) end
+end
+
+local function Settle()
+    swapToken = swapToken + 1
+    swap.token = swapToken
+    local token = swapToken
+    C_Timer.After(BAR_SETTLE, function() FinishSwap(token) end)
 end
 
 -- A talent change starts a short settle timer and later talent or spell
--- events restart it; the profile loads once they stop, so it places the new
--- spec's spells. A swap keeps the number of points, so CHARACTER_POINTS_CHANGED
--- may not come (seen in play, 2026-10-22: only spells were unlearned and
--- learned); a talent split that differs from the one at Activate counts too.
-local function SettleBars(pointsChanged)
-    if not pendingBars then return end
-    if not (pendingBars.changed or pointsChanged) then
-        local t1, t2, t3 = GetTalentCounts()
-        local before = pendingBars.before
-        if t1 == before[1] and t2 == before[2] and t3 == before[3] then return end
-    end
-    pendingBars.changed = true
-    barToken = barToken + 1
-    pendingBars.token = barToken
-    local token = barToken
-    C_Timer.After(BAR_SETTLE, function() LoadPendingBars(token) end)
+-- events restart it; the swap counts as done once they stop, so the bars
+-- place the new spec's spells. A swap keeps the number of points, so
+-- CHARACTER_POINTS_CHANGED may not come (seen in play, 2026-10-22: only
+-- spells were unlearned and learned); a build that differs from the one at
+-- Activate counts too.
+local function OnSwapEvent(pointsChanged)
+    if not swap then return end
+    if not (swap.changed or pointsChanged) and CurrentBuild() == swap.before then return end
+    swap.changed = true
+    Settle()
 end
 
-local function WatchBars(profile)
-    local watch = { profile = profile, before = { GetTalentCounts() } }
-    pendingBars = watch
+local function WatchSwap(slot, profile)
+    local watch = { slot = slot, profile = profile, before = CurrentBuild() }
+    swap = watch
     ListenForSwap(true)
-    C_Timer.After(BAR_TIMEOUT, function()
-        if pendingBars == watch and not watch.changed then
-            StopWatchingBars()
-            Print("Talents did not change, so action bars were left as they are.")
+    local spec = Spec(slot)
+    if spec and spec.build == watch.before then
+        -- The slot holds the talents you have now: nothing will change.
+        watch.changed = true
+        Settle()
+        return
+    end
+    C_Timer.After(SWAP_TIMEOUT, function()
+        if swap == watch and not watch.changed then
+            StopWatching()
+            if profile then Print("Talents did not change, so action bars were left as they are.") end
         end
     end)
 end
@@ -179,6 +230,22 @@ local function ReadMenu()
         end
     end
     return isDevice and found or nil
+end
+
+-- The device's own split is the truth; keep it for when it is not shown. A
+-- recorded build with another split was saved over from the device's own menu.
+local function SyncSpecs()
+    for slot in pairs(menu.activate) do
+        local spec = EnsureSpec(slot)
+        local split = menu.split[slot]
+        if split then
+            spec.t1, spec.t2, spec.t3 = split[1], split[2], split[3]
+            if spec.build then
+                local b1, b2, b3 = BuildSplit(spec.build)
+                if b1 ~= split[1] or b2 ~= split[2] or b3 ~= split[3] then spec.build = nil end
+            end
+        end
+    end
 end
 
 -- The native window stays open (closing it ends the conversation) but is
@@ -227,8 +294,6 @@ local function Confirm(which, option, a1, a2, action)
     if dialog then dialog.data = { owner = owner, action = action } end
 end
 
--- The slot whose split matches the talents you have now. The device lists
--- Activate for every slot, including the one in use.
 local function SlotSplit(slot)
     local split = menu.split[slot]
     if split then return split[1], split[2], split[3] end
@@ -237,11 +302,35 @@ local function SlotSplit(slot)
     return 0, 0, 0
 end
 
-local function IsActive(slot)
-    if not menu.activate[slot] then return false end
+-- Whether a slot holds these talents: exactly by its recorded build, else by
+-- its point split.
+local function Holds(slot, build, c1, c2, c3)
+    local spec = Spec(slot)
+    if spec and spec.build then return spec.build == build end
     local t1, t2, t3 = SlotSplit(slot)
-    local c1, c2, c3 = GetTalentCounts()
     return t1 + t2 + t3 > 0 and t1 == c1 and t2 == c2 and t3 == c3
+end
+
+-- The slot whose talents you have now; nil when none, or when the splits of
+-- several fit and nothing tells them apart. The device lists Activate for
+-- every slot, including the one in use. Of two slots with the same talents,
+-- the one last saved or activated here.
+local function ActiveSlot()
+    local build = CurrentBuild()
+    local c1, c2, c3 = GetTalentCounts()
+    local current = BrainwasherProDB.current
+    if current and menu.activate[current] and Holds(current, build, c1, c2, c3) then return current end
+    local exact, exactCount, loose, looseCount = nil, 0, nil, 0
+    for slot in pairs(menu.activate) do
+        local spec = Spec(slot)
+        if spec and spec.build then
+            if spec.build == build then exact, exactCount = slot, exactCount + 1 end
+        elseif Holds(slot, build, c1, c2, c3) then
+            loose, looseCount = slot, looseCount + 1
+        end
+    end
+    if exactCount == 1 then return exact end
+    if exactCount == 0 and looseCount == 1 then return loose end
 end
 
 local function SpecName(slot)
@@ -261,15 +350,17 @@ function BrainwasherPro:ActivateSlot(slot)
     end
     local option = menu.activate[slot]
     if not option then return end
-    if IsActive(slot) then return Print(SpecName(slot) .. " is already active.") end
+    if ActiveSlot() == slot then return Print(SpecName(slot) .. " is already active.") end
     Confirm("BRAINWASHERPRO_LOAD_SPEC", option, SpecName(slot), nil, function(owner)
+        if not Choose(option, owner) then return end
         local profile = Spec(slot) and Spec(slot).actionProfile
-        if not (Choose(option, owner) and profile and BarsAvailable()) then return end
-        if ProfileExists(profile) == false then
+        if profile and ProfileExists(profile, ProfileNames()) == false then
             Print("Action bar profile \"" .. profile .. "\" no longer exists, so bars were left as they are.")
-        else
-            WatchBars(profile)
+            profile = nil
+        elseif not BarsAvailable() then
+            profile = nil
         end
+        WatchSwap(slot, profile)
     end)
 end
 
@@ -281,6 +372,9 @@ function BrainwasherPro:SaveSlot(slot)
         if not Choose(option, owner) then return end
         local spec = EnsureSpec(slot)
         spec.t1, spec.t2, spec.t3 = GetTalentCounts()
+        spec.build = CurrentBuild()
+        BrainwasherProDB.current = slot
+        BrainwasherPro:UpdateAllDisplays()
     end)
 end
 
@@ -322,19 +416,15 @@ local function ShowRowTooltip()
     GameTooltip:Show()
 end
 
-local function UpdateRow(slot)
+local function UpdateRow(slot, active, names)
     local row = rows[slot]
     local spec = Spec(slot)
     local buy = menu.buy[slot]
     local owned = menu.activate[slot] or menu.save[slot]
     local split = menu.split[slot]
     local summary, keep = "", 0
-    local active = IsActive(slot)
     row.tip = nil
     if active then row.active:Show() else row.active:Hide() end
-
-    -- The device's own split is the truth; keep it for when it is not shown.
-    if split and spec then spec.t1, spec.t2, spec.t3 = split[1], split[2], split[3] end
 
     if buy then
         row.icon:SetTexture("Interface\\Icons\\INV_Misc_Coin_01")
@@ -349,7 +439,7 @@ local function UpdateRow(slot)
         local hasSplit = t1 + t2 + t3 > 0
         if hasSplit then summary = ColorTalentSummary(t1, t2, t3) end
         local bars = spec and spec.actionProfile
-        local missing = bars and ProfileExists(bars) == false
+        local missing = bars and ProfileExists(bars, names) == false
         if bars then
             -- A missing profile shows as such; its name is in the tooltip.
             summary = summary .. (hasSplit and "  " or "") .. "Bars: "
@@ -372,10 +462,9 @@ end
 
 function BrainwasherPro:UpdateAllDisplays()
     if not (mainFrame and menu) then return end
+    local active, names = ActiveSlot(), ProfileNames()
     for slot = 1, MAX_SLOTS do
-        if rows[slot] then
-            if slot <= menu.slots then UpdateRow(slot) else rows[slot]:Hide() end
-        end
+        if slot <= menu.slots then UpdateRow(slot, slot == active, names) else rows[slot]:Hide() end
     end
     if menu.reset then
         mainFrame.reset:SetText(menu.reset.price and ("Reset talents (" .. menu.reset.price .. ")") or "Reset talents")
@@ -393,7 +482,7 @@ local function CreateRow(slot)
     -- Hovering the row shows the full name and action bar profile.
     row:EnableMouse(true)
     row:SetScript("OnEnter", ShowRowTooltip)
-    row:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    row:SetScript("OnLeave", UI.HideTooltip)
 
     local iconButton = CreateFrame("Button", "BrainwasherProIcon" .. slot, row)
     iconButton:SetWidth(28); iconButton:SetHeight(28)
@@ -447,8 +536,8 @@ function BrainwasherPro:CreateMainFrame()
     original:SetPoint("BOTTOMRIGHT", mainFrame, "BOTTOMRIGHT", -28, 18)
     UI.Tooltip(original, "Show the device's own menu.")
 
-    -- The close glyph also ends the conversation; Escape and Show original
-    -- only bring the device's own menu back.
+    -- The close glyph (UI.Window's BrainwasherProFrameClose) also ends the
+    -- conversation; Escape and Show original only bring the device's own menu back.
     BrainwasherProFrameClose:SetScript("OnClick", function()
         mainFrame:Hide()
         CloseGossip()
@@ -461,17 +550,30 @@ end
 
 -- Edit window ------------------------------------------------------------------
 
+-- Spell and item icons, as ClassicAPI lists them for macros (API.md,
+-- GetMacroIcons); the stock GetMacroIconInfo list has no item icons.
+local function Icons()
+    if not icons then
+        icons = { "INV_Misc_QuestionMark" }
+        GetLooseMacroIcons(icons)
+        GetLooseMacroItemIcons(icons)
+        GetMacroIcons(icons)
+        GetMacroItemIcons(icons)
+    end
+    return icons
+end
+
 local function ShowIconPage()
-    local count = GetNumMacroIcons()
-    local pages = math.max(1, math.ceil(count / ICONS_PER_PAGE))
+    local list = Icons()
+    local pages = math.max(1, math.ceil(#list / ICONS_PER_PAGE))
     iconPage = math.max(1, math.min(pages, iconPage))
     local first = (iconPage - 1) * ICONS_PER_PAGE
     for i = 1, ICONS_PER_PAGE do
         local button = editFrame.icons[i]
-        local index = first + i
-        if index <= count then
-            button.texture:SetTexture(GetMacroIconInfo(index))
-            button.index = index
+        local name = list[first + i]
+        if name then
+            button.path = ICON_PATH .. name
+            button.texture:SetTexture(button.path)
             button:Show()
         else
             button:Hide()
@@ -491,7 +593,7 @@ end
 
 -- Steps through None and every profile ActionBarProfiles has for this character.
 local function CycleBars(step)
-    local names = ABP_GetProfileNames() or {}
+    local names = ProfileNames() or {}
     local position = 0
     for i, profile in ipairs(names) do
         if profile == editProfile then position = i end
@@ -551,7 +653,7 @@ function BrainwasherPro:CreateEditFrame()
         button.texture = button:CreateTexture(nil, "ARTWORK")
         button.texture:SetAllPoints(button)
         button:SetScript("OnClick", function()
-            editIcon = GetMacroIconInfo(button.index)
+            editIcon = button.path
             editFrame.preview:SetTexture(editIcon)
         end)
         editFrame.icons[i] = button
@@ -603,7 +705,7 @@ function BrainwasherPro:OnGossipShow()
     local found = ReadMenu()
     if not found then return end
     menu = found
-    for slot in pairs(found.activate) do EnsureSpec(slot) end
+    SyncSpecs()
     self:CreateMainFrame()
     HideGossip()
     mainFrame:Show()
@@ -643,19 +745,18 @@ eventFrame:RegisterEvent("GOSSIP_SHOW")
 eventFrame:RegisterEvent("GOSSIP_CLOSED")
 
 eventFrame:SetScript("OnEvent", function()
-    if event == "ADDON_LOADED" and arg1 == addonName then
-        BrainwasherProDB = BrainwasherProDB or {}
-        BrainwasherProDB.specs = BrainwasherProDB.specs or {}
-        -- 1.5 saved every talent of each spec but never read it back.
-        for _, spec in pairs(BrainwasherProDB.specs) do spec.talents = nil end
-    elseif event == "GOSSIP_SHOW" then
+    if event == "GOSSIP_SHOW" then
         BrainwasherPro:OnGossipShow()
     elseif event == "GOSSIP_CLOSED" then
         BrainwasherPro:OnGossipClosed()
     elseif event == "CHARACTER_POINTS_CHANGED" or event == "SPELLS_CHANGED" then
-        SettleBars(event == "CHARACTER_POINTS_CHANGED")
+        OnSwapEvent(event == "CHARACTER_POINTS_CHANGED")
     elseif event == "PLAYER_REGEN_ENABLED" then
-        if pendingBars and pendingBars.afterCombat then LoadPendingBars(pendingBars.token) end
+        if swap and swap.afterCombat then FinishSwap(swap.token) end
+    elseif event == "ADDON_LOADED" and arg1 == addonName then
+        eventFrame:UnregisterEvent("ADDON_LOADED")
+        BrainwasherProDB = BrainwasherProDB or {} -- vanillaforge-ignore: D2 (once, on load)
+        BrainwasherProDB.specs = BrainwasherProDB.specs or {} -- vanillaforge-ignore: D2 (once, on load)
     end
 end)
 
@@ -669,5 +770,5 @@ local entryText = entry:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall
 entryText:SetPoint("TOPLEFT", entryTitle, "BOTTOMLEFT", 0, -8)
 entryText:SetWidth(380)
 entryText:SetJustifyH("LEFT")
-entryText:SetText("Switch talent specs from the Brainwasher NPC. The window opens when you talk to one.")
+entryText:SetText("Named talent specs at the Goblin Brainwashing Device. The window opens when you talk to the device.")
 InterfaceOptions_AddCategory(entry)
