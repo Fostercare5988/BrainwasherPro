@@ -165,6 +165,7 @@ local function Settle()
     swap.token = swapToken
     local token = swapToken
     C_Timer.After(BAR_SETTLE, function() FinishSwap(token) end)
+    return token
 end
 
 -- A talent change starts a short settle timer and later talent or spell
@@ -192,10 +193,15 @@ local function WatchSwap(slot, profile)
         return
     end
     C_Timer.After(SWAP_TIMEOUT, function()
-        if swap == watch and not watch.changed then
-            StopWatching()
-            if profile then Print("Talents did not change, so action bars were left as they are.") end
+        if swap ~= watch or watch.changed then return end
+        -- A last look, in case the talents changed without an event.
+        if CurrentBuild() ~= watch.before then
+            watch.changed = true
+            FinishSwap(Settle())
+            return
         end
+        StopWatching()
+        if profile then Print("Talents did not change, so action bars were left as they are.") end
     end)
 end
 
