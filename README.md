@@ -17,6 +17,11 @@ Warcraft 1.12.1. Requires ClassicAPI.
   since deleted shows as "Bars: missing".
 - **Show original** brings back the device's own menu.
 
+## Install
+
+Download `BrainwasherPro.zip` from the [latest release](https://github.com/Fostercare5988/BrainwasherPro/releases/latest) and extract it into
+`Interface/AddOns`.
+
 ## Credits
 
 Based on BrainwasherPro by **Horyoshi**. Modernized and maintained by Fostercare5988.
